@@ -1,0 +1,8 @@
+#!/bin/ash
+ifconfig br-lan:1 192.168.251.113
+iw wlan0 set bitrates legacy-2.4 1
+iw wlan0 set channel 11
+/scripts/rfmon_recv wlan0 >/dev/null &
+mjpg_streamer -i "./input_uvc.so -n -r 160x120 -f 7 -d /dev/video0" -o "./output_http.so -p 8080 -n" &
+exit 0
+

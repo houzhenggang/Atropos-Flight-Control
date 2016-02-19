@@ -1,0 +1,2 @@
+*/2 * * * * killall -9 check_emisora.sh;  cd /etc/emisora ; ./check_emisora.sh &
+
