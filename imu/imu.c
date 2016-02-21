@@ -20,7 +20,6 @@
 #include <stdlib.h>
 //#include <linux/watchdog.h>
 
-
 #define I2C0 "/dev/i2c-0"
 #define I2C1 "/dev/i2c-1"
 #define SERIE "/dev/ttyS0"
@@ -29,7 +28,9 @@
 #define WATCHDOG "/dev/watchdog"
 
 #define is_NaN(x) ((x) != (x))
-#define DELTA_T 0.015 /*0.017*/
+#define DELTA_T 0.070/*0.015*/
+#define DELTA_C 0.10
+#define DELTA_TELE_MULT (int)(DELTA_C/DELTA_T)
 
 #define WINDOW_ROUND_1 (int)((1.2-DELTA_T)*5*1)
 #define WINDOW_ROUND_2 (int)((1.2-DELTA_T)*5*2)
@@ -38,7 +39,7 @@
 #define COMPASS_ADDR   0x21
 #define BARO_ADDR      0x77
 #define MAGNETO_ADDR   0x1E
-#define RADIO_ADDR	   0x02
+#define RADIO_ADDR     0x02
 
 #define WII_ADDR       0x52
 #define WII_REQ_DATA   0x00
@@ -53,20 +54,33 @@
 #define ACCL_INIT_REG  0xFB
 #define ACCL_INIT_DATA 0x00
 
+#define MOTOR_0_ADDR   0x29
+#define MOTOR_1_ADDR   0x2a
+#define MOTOR_2_ADDR   0x2b
+#define MOTOR_3_ADDR   0x2c
+
+
+
+#define ESC_TEMP_SCALE 1
+#define ESC_VBAT_SCALE 0.0022
+
+
 #define GYRO_INIT_ADDR 0x53
 #define GYRO_INIT_REG  0xFE
 #define GYRO_INIT_DATA 0x04
+
+#define TEXAS_ADDR 0x08
 
 #define GYRO_SLOW_FACTOR 20.0
 #define GYRO_FAST_FACTOR 4.454545
 
 #define MAG_SCALE	715
-#define MAG_SCALE_X 1264.4 
+#define MAG_SCALE_X 	1264.4 
 #define MAG_SCALE_Y	1264.4
 #define MAG_SCALE_Z	1177.2
 
 
-#define TIMEOUT_COMMAND 20
+#define TIMEOUT_COMMAND 50
 #define TIMEOUT_GPS		100
 #define WII_BUFFER_SIZE 6
 
@@ -75,10 +89,10 @@
 #define CENTER_PITCH	7922
 #define CENTER_ROLL		8214
 
-#define FIXED_ACCEL
+#define FIXED_ACCEL	1
 
-#define CENTER_X 	521
-#define CENTER_Y	519
+#define CENTER_X 	505  
+#define CENTER_Y	511
 #define CENTER_Z	512 //715*/
 
 #define MAX_ANTIWINDUP 500
@@ -99,7 +113,7 @@
 
 #define DEG_TO_RAD  0.017453  // PI/180
 #define RAD_TO_DEG 57.295779
-#define PI	    	3.141593
+#define PI	    3.141593
 #define PI_DIV_2    1.570796
 #define PI_MUL_2    6.283185
 
@@ -110,12 +124,11 @@
 #define BUMPERS		2
 #define ANALOGS		2
 
-#define MIN_PWM 	1 
-#define MED_PWM 	254
-#define MAX_PWM 	511
-#define RANGE_PWM 	510 
-#define NOMINAL_PWM  220
-#define MIN_NOMINAL_PWM 40
+#define MIN_PWM 	0 
+#define MAX_PWM 	0x7FFF
+
+
+#define MIN_NOMINAL_PWM 1
 
 
 #define BUFFER_SERIE 12
@@ -129,8 +142,16 @@
 #define TELEMETRY_MSG_QUEUE_SIZE 30
 #define TELEMETRY_MSG_SIZE 80
 
-#define MAX_GAS_START 110
+
+#define REMOTE_SCALE    0.07
+#define REMOTE_SCALE_FOR_YAW_RATE 0.0007
+#define PERCENT_GAS_YAW_CONTROL_ACT 20
+
+#define VBATT_SCALE     18.36
+#define MAX_GAS_START 3300
 #define FAILSAFE_GAS_TH 200000
+
+
 struct gps{
 	double longitud;
 	double latitud;
@@ -208,10 +229,10 @@ struct floatAxis{
 };
 
 struct pid{
-	float output;
-	double error;
-	float d;
-	float i;
+    float output;
+    double error;
+    float d;
+    float i;
     float p;
     float d1;
     float d2;
@@ -235,18 +256,40 @@ struct puerto{
 	int serie;
 	int radio;
 };
+
+struct motor_address_t{
+    unsigned char addr;
+    unsigned char isreverse;
+    float temperature;
+    float vbatt;
+    int rpm;
+    int fd;
+    
+};
+
+
+struct texas_ranger_t{
+  unsigned char switches;
+  unsigned char motor_l;
+  unsigned char motor_r;
+  unsigned int comp;
+  unsigned int elev;
+  unsigned int rumbo;
+  
+};
 short autopilot=0;
-short yaw_control=0;
+short yaw_control=1;
 short target_yaw_control=1;
 short magswitch=2;
 short magmode=1;
 short failsafe=0;
-short tipoTelemetria=0; //0: web 1: udp //2: strout
 short statusGPS=-1;
 int pidGPS=-1;
 int pidUDP=-1;
 
 float declinacionMAG=0;
+
+struct texas_ranger_t texas;
 struct imu target;
 struct gps targetGPS;
 struct imu mando;
@@ -294,8 +337,10 @@ struct          UDPConnection  udpSendConn;
 char            last_buffer_serie[BUFFER_SERIE];
 signed int      escSpecialCom=-1;
 unsigned int    motor[SERVOS];
+struct motor_address_t motor_settings[SERVOS];
 unsigned char   motor_enabled[SERVOS];
 signed int      motor_offset[SERVOS];
+
 unsigned char   serial[10];
 unsigned char   port[PORTS];
 
@@ -309,7 +354,7 @@ double 		    lastGPSClock=0;
 int 		    roundGPS=0;
 char            *read_mem;
 double          *gps_mem;
-char            *write_mem;
+unsigned char            *write_mem;
 int             shmid, shmidw;
 struct          sched_param schedule;
 int             calibration_reads;
@@ -470,6 +515,8 @@ inline void Drift_correction_ac(struct  floatAxis * accel){
 
 }
 
+
+
 inline void Drift_correction_mag(float MAG_Rumbo)
     {
         float Scaled_Omega[3];
@@ -497,7 +544,7 @@ void queueMessage(char  listaMsg[TELEMETRY_MSG_QUEUE_SIZE][TELEMETRY_MSG_SIZE], 
 	*nextMsgToQueue=*nextMsgToQueue+1;
 	if (*nextMsgToQueue==TELEMETRY_MSG_QUEUE_SIZE){*nextMsgToQueue=0;}
 	if (print ==1){
-		printf("\r\n%s",msg);
+		printf("\n%s",msg);
 		fflush(stdout);
 	}
 	
@@ -509,7 +556,7 @@ int nextMessage(char listaMsg[TELEMETRY_MSG_QUEUE_SIZE][TELEMETRY_MSG_SIZE],int 
     int msgToReturn=*nextMsgToSend;
     if(msgToErase<0){msgToErase=TELEMETRY_MSG_QUEUE_SIZE-1;}
 
-	strcpy(listaMsg[msgToErase],"");
+	listaMsg[msgToErase][0]='\0';
 	*nextMsgToSend=*nextMsgToSend+1;
 	if (*nextMsgToSend==TELEMETRY_MSG_QUEUE_SIZE){*nextMsgToSend=0;}
 	return msgToReturn;
@@ -522,7 +569,7 @@ int shared_init(){
 	if((shmid = shmget(9981,6*sizeof(double *) , IPC_CREAT | 0666)) < 0) { queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[1003]Falló al establecer memoria compartida[3]",1);return -1;}
 	if((gps_mem = (double  *) shmat(shmid, NULL, 0)) < 0) {queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[critical]Falló al establecer memoria compartida[4]",1);  return -1;}
 	if((shmidw = shmget(9997, 256, IPC_CREAT | 0666)) < 0){queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[critical]Falló al establecer memoria compartida[5]",1);return -1;}	
-	if((write_mem = (char *) shmat(shmidw, NULL, 0)) < 0) {queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[critical]Falló al establecer memoria compartida[6]",1);return -1;}
+	if((write_mem = (unsigned char *) shmat(shmidw, NULL, 0)) < 0) {queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[critical]Falló al establecer memoria compartida[6]",1);return -1;}
 	return 0;
 }
 int buffer_to_file(char * source_buffer,int buffer_size ,char *target_file){
@@ -559,10 +606,27 @@ float get_value(char * file, float defValue){
 	
 	return result;
 }
-inline char avoid_char(char input, char avoid){
-	if(input==avoid){input--;}
-	return input;
+
+void toBinArray(unsigned char * binArray,signed long  value,unsigned  int bytes){
+	int ac=0;
+	int acAux=0;
+	char issigned=0x00;
+
+	if(value<0){issigned=0x01;}
+	unsigned long uvalue=0;
+	uvalue=abs(value);
+	
+	
+	for(ac=((bytes-1)*8);ac>=0;ac=ac-8){
+		binArray[acAux]=(unsigned char)((uvalue>>ac)&0x000000FF);
+		acAux++;
+
+	}
+	
+	binArray[0]|=((issigned&0x01)<<7);
+  
 }
+
 void apply_failsafe_behaviour(char * comm, int currGas){
     //int gas;
     //if (currGas>=FAILSAFE_GAS_TH){
@@ -601,18 +665,18 @@ struct comando get_strCommand(char * comm,unsigned char  defOrder, int defValue)
 		
 			if(com.orden=='Q'){
 				ptok = strtok (rawOrder,"Z"); 	if(ptok==NULL){com.orden=(int)NULL;return com;}
-				ptok = strtok (NULL, "Z");	    if(ptok==NULL){com.orden=(int)NULL;return com;}
+				ptok = strtok (NULL, "Z");	if(ptok==NULL){com.orden=(int)NULL;return com;}
 				com.gas=atoi(ptok);
-				ptok = strtok (NULL, "Z");	    if(ptok==NULL){com.orden=(int)NULL;return com;}
+				ptok = strtok (NULL, "Z");	if(ptok==NULL){com.orden=(int)NULL;return com;}
 				com.alabeo=atoi(ptok);
 				ptok = strtok (NULL, "Z");  	if(ptok==NULL){com.orden=(int)NULL;return com;}
 				com.cabeceo=atoi(ptok);
-				ptok = strtok (NULL, "Z");	    if(ptok==NULL){com.orden=(int)NULL;return com;}
+				ptok = strtok (NULL, "Z");	if(ptok==NULL){com.orden=(int)NULL;return com;}
 				com.ginnada=atoi(ptok);			
 			}else{
 				if(com.orden=='G'){
 	                                ptok = strtok (rawOrder,"Z");	if(ptok==NULL){com.orden=(int)NULL;return com;}
-        	                        ptok = strtok (NULL, "Z");	    if(ptok==NULL){com.orden=(int)NULL;return com;}
+        	                        ptok = strtok (NULL, "Z");	if(ptok==NULL){com.orden=(int)NULL;return com;}
 					com.latitud=atof(ptok);
 					ptok = strtok (NULL, "Z");	if(ptok==NULL){com.orden=(int)NULL;return com;}
 					com.longitud=atof(ptok);
@@ -645,6 +709,37 @@ int stop_kernel_watchdog(){
     return fd;
 }
 
+inline int i2c_write(int fileport,unsigned char device_addr,unsigned  char device_register,unsigned char device_data){
+	unsigned char buff_out[2];	
+	int data_size=2;
+
+	buff_out[0]=device_register;
+	
+	if (device_data!=I2C_NULL){
+		buff_out[1]=device_data;
+	}else{
+		data_size=1;
+	}
+	
+
+	ioctl(fileport, I2C_SLAVE, device_addr);
+	return write(fileport, buff_out, data_size);
+}
+int i2c_buffer_write(int fileport, unsigned char device_addr, unsigned char * buffer, unsigned char len){
+
+        ioctl(fileport, I2C_SLAVE, device_addr);
+        return write(fileport, buffer, (size_t)len);	
+
+
+}
+inline int i2c_read(int fileport,unsigned char device_addr,unsigned char * buffer, int size){
+
+	if(device_addr!=I2C_NULL)
+	{
+		ioctl(fileport, I2C_SLAVE, device_addr);
+	}
+	return read(fileport, buffer,size);
+}
 void real_time_scheduling(int stage){
 	struct sched_param schedule;
     system("killall httpd 2>/dev/null");
@@ -670,7 +765,7 @@ int get_order(char * command){
     float val;
 	com=get_strCommand(command,'*','0');	
 	if (com.orden==(int)NULL){return -1;}
-		
+	unsigned char texas_buffer[3]={0,0,0};
 	escSpecialCom=-1;
 	lastCommand=com.orden;
 	lastValue=(float)com.valor;
@@ -678,10 +773,10 @@ int get_order(char * command){
 		case 'Q':
 			
 			//ANTES TARGET
-			mando.altitud=  ((float)com.gas/1000);
-			mando.cabeceo=  ((float)com.cabeceo/1000);
-			mando.alabeo=  ((float)com.alabeo/1000);
-			mando.v_ginnada=  ((float)com.ginnada/1000);
+			mando.altitud=  ((float)com.gas*REMOTE_SCALE);
+			mando.cabeceo=  ((float)com.cabeceo*REMOTE_SCALE);
+			mando.alabeo=  ((float)com.alabeo*REMOTE_SCALE);
+			mando.v_ginnada=  ((float)com.ginnada*REMOTE_SCALE_FOR_YAW_RATE);
 			
 		break;	
 		case 'G':
@@ -693,18 +788,18 @@ int get_order(char * command){
 			//}
 		break;
 		case 'Y': 
-			lectura_encendido=(signed int)(com.valor/1000000);
-			if (lectura_encendido==1){
+			lectura_encendido=(signed int)(com.valor);
+			
+
+			if (lectura_encendido>=1){
 				if (mando.altitud<=MAX_GAS_START){
 					if(failsafe==1){
-						encendido=0;
-						
+						encendido=0;						
 						queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[wrn] No hay recepcion de mando",1);
 					}else{
 						encendido=1;
 					}	
 				}else{
-	
 					queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[wrn] Bajar gas al minimo para encender",1);
 					encendido=0;
 				}
@@ -713,8 +808,8 @@ int get_order(char * command){
 			}
 			if(encendido==1){
 				queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[info]Encendido",1);
-				send_serial(strt, 2);
-				target.altitud=-1000;
+				//send_serial(strt, 2);
+				target.altitud=0;
 			}else{
 				queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[info]Apagado",1);
 				
@@ -736,10 +831,65 @@ int get_order(char * command){
             }
             
 		break;
-		/*
-		case 'A': target.alabeo=  ((float)com.valor/1000000);break;
-		case 'C': target.cabeceo= ((float)com.valor/1000000);break;
-		case 'G': target.ginnada= ((float)com.valor/1000000);break;//target de velocidad angular, no de angulo
+
+		case 'C':
+		  texas.rumbo=com.valor;
+		  texas_buffer[0]=0x00;
+		  texas_buffer[1]= (unsigned char)((texas.rumbo>>8)&0x00FF);
+		  texas_buffer[2]= (unsigned char)((texas.rumbo)&0x00FF); 	
+		  i2c_buffer_write(f_i2c0,(unsigned char)TEXAS_ADDR,texas_buffer ,3);
+		break;  
+		case 'c':
+		  texas.elev=com.valor;
+                  texas_buffer[0]=0x02;
+                  texas_buffer[1]= (unsigned char)((texas.elev>>8)&0x00FF);
+                  texas_buffer[2]= (unsigned char)((texas.elev)&0x00FF);
+                  i2c_buffer_write(f_i2c0,(unsigned char)TEXAS_ADDR,texas_buffer ,3);
+		break;
+		
+		
+		case 'H':
+
+		  texas.motor_l=com.valor;
+                  texas_buffer[0]=0x06;
+                  texas_buffer[1]= (unsigned char)texas.motor_l;
+                  texas_buffer[2]=0x00;
+                  i2c_buffer_write(f_i2c0,(unsigned char)TEXAS_ADDR,texas_buffer ,2);
+		break;
+
+		case 'h':
+		  texas.motor_r=com.valor;
+                  texas_buffer[0]=0x07;
+                  texas_buffer[1]= (unsigned char)texas.motor_r;
+                  texas_buffer[2]=0x00;
+                  i2c_buffer_write(f_i2c0,(unsigned char)TEXAS_ADDR,texas_buffer ,2);
+		break;
+
+		
+		case 'J':
+
+		  texas.motor_l=(unsigned char)(com.valor>>8)&0x00FF;
+		  texas.motor_r=(unsigned char)(com.valor)&0x00FF;
+                  texas_buffer[0]=0x06;
+                  texas_buffer[1]= (unsigned char)texas.motor_l;
+                  texas_buffer[2]= (unsigned char)texas.motor_r;
+                  i2c_buffer_write(f_i2c0,(unsigned char)TEXAS_ADDR,texas_buffer ,3);
+		break;
+	
+		
+		
+		case 'A':
+		  texas.switches=com.valor;
+                  texas_buffer[0]=0x08;
+                  texas_buffer[1]= (unsigned char)texas.switches;
+                  texas_buffer[2]=0x00;
+                  i2c_buffer_write(f_i2c0,(unsigned char)TEXAS_ADDR,texas_buffer ,2);
+
+		break;  
+		
+		
+		
+		/* target.ginnada= ((float)com.valor/1000000);break;//target de velocidad angular, no de angulo
 		
 		
 		
@@ -775,14 +925,7 @@ int get_order(char * command){
 			}
 		break;
         
-        case 'z': if(encendido==0){ escSpecialCom=MIN_PWM;}break;
 
-		case 't': 
-			tipoTelemetria=(short)com.valor;
-			sprintf(msg_telemetry,"#Sys:[info] Tipo de Telemetria: %i", (int)tipoTelemetria);
-			queueMessage(colaMensajes, &nextMsgToQueue,msg_telemetry,1);
-			
-		break;
 		
         case 'K': if (com.valor<SERVOS&&com.valor>=0){
                         sprintf(msg_telemetry,"#Sys:[wrn]Encendido motor %i", com.valor);
@@ -836,6 +979,7 @@ int get_order(char * command){
                 case 23: Kginnada.imax=val*1000000;sprintf(msg_telemetry,"#Sys:[wrn] Kginnada.imax %f", val*1000000);break;
             }
             queueMessage(colaMensajes, &nextMsgToQueue,msg_telemetry,1);
+	    printf("\r\n %s",msg_telemetry) ;
         break;
         case 'r':
             if((com.valor>=0)&&(com.valor<=3)){
@@ -948,33 +1092,8 @@ void get_config(int sig){
     sprintf(msg_telemetry,"#Sys:[info] Lectura config");
     queueMessage(colaMensajes, &nextMsgToQueue,msg_telemetry,1);
 }
-inline int i2c_write(int fileport,unsigned char device_addr,unsigned  char device_register,unsigned char device_data){
-	unsigned char buff_out[2];	
-	int data_size=2;
 
-	buff_out[0]=device_register;
-	
-	if (device_data!=I2C_NULL){
-		buff_out[1]=device_data;
-	}else{
-		data_size=1;
-	}
-	
-
-	ioctl(fileport, I2C_SLAVE, device_addr);
-	return write(fileport, buff_out, data_size);
-}
-inline int i2c_read(int fileport,unsigned char device_addr,unsigned char * buffer, int size){
-
-	if(device_addr!=I2C_NULL)
-	{
-		ioctl(fileport, I2C_SLAVE, device_addr);
-	}
-	return read(fileport, buffer,size);
-}
 inline int get_wii(int fileport,unsigned char * buffer){	
-	
-	
 	i2c_write(fileport,WII_ADDR,WII_REQ_DATA ,I2C_NULL);
     return  (i2c_read(fileport,I2C_NULL,buffer,WII_BUFFER_SIZE ));
 	
@@ -1011,9 +1130,7 @@ inline int get_mag(int fileport, struct floatAxis * m,  struct floatAxis * bias)
 		m->z=(float)rz*bias->z;
 
 	}
-	
 	return 0;
-
 }
 
 struct floatAxis get_magcalibration(int fileport){
@@ -1110,7 +1227,7 @@ inline float angleInRadians(int range, int measured) {
   	return (float)(measured/(float)range) * PI;
 }
 
-inline unsigned int check_range_servo(int pwm){
+inline unsigned long limitMotor(long pwm){
 	if (pwm>MAX_PWM){return MAX_PWM;}	
 	if (pwm<MIN_NOMINAL_PWM){return MIN_NOMINAL_PWM;}
 	return pwm;
@@ -1303,18 +1420,18 @@ inline void  getRawAccel( unsigned char * buffer, struct intAxis * rawAxis,unsig
 			an[1]=buffer[1];		
 			bump[0]=~((buffer[5]>>0) & 0x01);
 			bump[1]=~((buffer[5]>>1) & 0x01);
-
+			//printf("\r\nBBB%i\t%i\t%i\t",rawAxis->x,rawAxis->y,rawAxis->z);
 		}
 
 }
 inline int getRawGyro(unsigned char * buffer, struct floatAxis * rawAxis, struct floatAxis *baseAxis){
-		int tX,tY, tZ;
+	    unsigned int tX,tY, tZ;
         float YScale, XScale, ZScale;
-		tY=(((buffer[4] >> 2) << 8))+buffer[1];
-		tX=(((buffer[5] >> 2) << 8))+buffer[2];					
+		tX=(((buffer[4] >> 2) << 8))+buffer[1];
+		tY=(((buffer[5] >> 2) << 8))+buffer[2];					
 		tZ=(((buffer[3] >> 2) << 8))+buffer[0];
 
-		//printf("SAMPLE %i %i %i ", tX, tY, tZ);
+		//printf("\nSAMPLE %i %i %i ", tX, tY, tZ);fflush(stdout);
 		if((tX!=0)&&(tY!=0)&&(tZ!=0)){
 			if(baseAxis==NULL){
 				rawAxis->x = (float)tX;
@@ -1330,10 +1447,11 @@ inline int getRawGyro(unsigned char * buffer, struct floatAxis * rawAxis, struct
 			rawAxis->x = ((float)tX-baseAxis->x)/(float)XScale; 
 			rawAxis->y = ((float)tY-baseAxis->y)/(float)YScale;
 			rawAxis->z = ((float)tZ-baseAxis->z)/(float)ZScale;
-
-            rawAxis->x = ((float)tX-baseAxis->x)/(float)XScale; 
+			//interceptor switch
+			rawAxis->x=-rawAxis->x;
+         /* rawAxis->x = ((float)tX-baseAxis->x)/(float)XScale; 
 			rawAxis->y = ((float)tY-baseAxis->y)/(float)YScale;
-			rawAxis->z = ((float)tZ-baseAxis->z)/(float)ZScale;            
+			rawAxis->z = ((float)tZ-baseAxis->z)/(float)ZScale;            */
 				//printf(" %f \t %f \t %f",rawAxis->x,rawAxis->y,rawAxis->z);
 			return 1;
 		}
@@ -1352,7 +1470,11 @@ void getScaledRawAccel(struct intAxis * rawAxis, struct intAxis * rawBaseAxis){
 		#endif
 		
 		rawAxis->z-=CENTER_Z;
-		rawAxis->y=-rawAxis->y;
+		//interceptor switch
+		int t=rawAxis->y;
+		rawAxis->y=rawAxis->x;
+		rawAxis->x=t;
+		//rawAxis->z=-rawAxis->z;
 
 		
 }
@@ -1364,26 +1486,20 @@ inline void getAccelSample(int device , struct intAxis * rawAxis,struct intAxis 
 	unsigned char buffer[6];
 
 	get_wii(device,buffer);	
-    if(buffer[2]!=255){
-		getRawAccel(buffer,rawAxis, an, bump);		
-		getScaledRawAccel(rawAxis, rawBaseAxis);  
-        //printf("\r\n SAMP %i %i %i  ",rawAxis->x,rawAxis->y,rawAxis->z);     
-        //fflush(stdout); 
-    }
     
-	/*if(buffer[2]!=255){
-		getRawAccel(buffer,&newRawAxis, an, bump);		
-		getScaledRawAccel(&newRawAxis, rawBaseAxis);
-		printf(" SAMP %i %i %i B %i %i %i ",newRawAxis.x,newRawAxis.y,newRawAxis.z,rawBaseAxis->x,rawBaseAxis->y,rawBaseAxis->z);
+    //printf("\n ACCEL %i\t %i\t %i\t %i\t %i\t %i", buffer[0], buffer[1], buffer[2],buffer[3], buffer[4], buffer[5]);
+    //fflush(stdout);
 
-		rawAxis->x+=(newRawAxis.x);
-		rawAxis->y+=(newRawAxis.y);
-		rawAxis->z+=(newRawAxis.z);		
-	}else{
-		rawAxis->x+=(rawAxis->x);
-		rawAxis->y+=(rawAxis->y);
-		rawAxis->z+=(rawAxis->z);		
-	}*/	
+    //if(buffer[2]!=255){
+		getRawAccel(buffer,rawAxis, an, bump);	
+	
+		
+		//printf("\r\nKKK %f\t%f\t%f",rawAxis->x,rawAxis->y,rawAxis->z);
+		getScaledRawAccel(rawAxis, rawBaseAxis); 
+		
+		
+		//printf("\r\nRRR %f\t%f\t%f",rawAxis->x,rawAxis->y,rawAxis->z);
+    //}
 }
 inline void getMagSample(int device,struct floatAxis * rawAxis, struct floatAxis * biasAxis, struct floatAxis * offsetAxis ){
 	struct floatAxis  lastRawAxis;	
@@ -1408,7 +1524,7 @@ inline void getGyroSample(int device, struct floatAxis * rawAxis, struct floatAx
 	*/
 	get_wii(device,buffer);	
     //getRawGyro(buffer,rawAxis,rawBaseAxis);
-   // printf("\r\n %f \t %f \t %f ",rawAxis->x, rawAxis->y,rawAxis->z );
+    //printf("\r\n %f \t %f \t %f ",rawAxis->x, rawAxis->y,rawAxis->z );fflush(stdout);
 	if(getRawGyro(buffer,&newRawAxis,rawBaseAxis)==1){
         *rawAxis=newRawAxis;	
 	}
@@ -1457,7 +1573,7 @@ void getGyroAccelCalibration(struct puerto *fdevice, struct floatAxis *baseGyro,
 	baseAccel->z=0; lastAccel.z=0;
 	
 	getGyroSample(fdevice->gyro, baseGyro,NULL);
-	getAccelSample(fdevice->accel,  baseAccel , &zeroI,analogs, bumpers );
+	getAccelSample(fdevice->accel,  &lastAccel , &zeroI,analogs, bumpers );
 	
 	generalGyro.x=(float)baseGyro->x;
 	generalGyro.y=(float)baseGyro->y;
@@ -1467,7 +1583,8 @@ void getGyroAccelCalibration(struct puerto *fdevice, struct floatAxis *baseGyro,
 	generalAccel.y=(float)baseAccel->y;
 	generalAccel.z=(float)baseAccel->z;
 
-    
+    //printf("\r\nB %f\t%f\t%f",generalAccel.x,generalAccel.y,generalAccel.z);
+
     int dummywd=0;
 
 	for (ac=0; ac<reads;ac++){
@@ -1478,30 +1595,25 @@ void getGyroAccelCalibration(struct puerto *fdevice, struct floatAxis *baseGyro,
 		lastGyro.x=0;
 		lastGyro.y=0;
 		lastGyro.z=0;
-		lastAccel.x=0;
-		lastAccel.y=0;
-		lastAccel.z=0;
+
 		getGyroSample(fdevice->gyro, &lastGyro,NULL);
 		getAccelSample(fdevice->accel,  &lastAccel , &zeroI,analogs, bumpers );
-		
-		/*generalGyro.x=(float)baseGyro->x;
-		generalGyro.y=(float)baseGyro->y;
-		generalGyro.z=(float)baseGyro->z;
-		
-		generalAccel.x=(float)baseAccel->x;
-		generalAccel.y=(float)baseAccel->y;
-		generalAccel.z=(float)baseAccel->z;*/
-		
+
+		//printf("\r\n %f\t%f\t%f",lastAccel.x,lastAccel.y,lastAccel.z);
+
 		generalGyro.x=lowPassFilter(lastGyro.x,generalGyro.x,0.001);
 		generalGyro.y=lowPassFilter(lastGyro.y,generalGyro.y,0.001);
 		generalGyro.z=lowPassFilter(lastGyro.z,generalGyro.z,0.001);
-		//ioctl(fdwatchdog, WDIOC_KEEPALIVE, &dummywd);
+	
 
 		generalAccel.x=lowPassFilter(((float)lastAccel.x),generalAccel.x,0.001);
 		generalAccel.y=lowPassFilter(((float)lastAccel.y),generalAccel.y,0.001);
-		//generalAccel.z=lowPassFilter(abs(lastAccel.z),generalAccel.z,0.3);
+		//generalAccel.z=lowPassFilter(abs(lastAccel.z),generalAccel.z,0.001);
+
 		//baseAccel->z=lowPassFilter(abs(lastAccel.z),baseAccel->z,0.7);		
 		//baseAccel->z=(baseAccel->x+baseAccel->y)/2;
+
+		
 		
 		
 	}
@@ -1634,14 +1746,7 @@ void GPSreceiver(){
 		}
 
 	}
-
-	
 }
-
-
-
-
-
 
 float shortestAngle(float target, float current){
     float res=target;
@@ -1658,7 +1763,6 @@ float shortestAngle(float target, float current){
     return res;
 }
 
-
 float currentAnguloContinuo(float current, float target){
 
 	
@@ -1672,8 +1776,6 @@ float currentAnguloContinuo(float current, float target){
 	
 	return current;
 }
-
-
 
 float *scaleUpper(float *values,int size, float maxValue){
         float upper=0;
@@ -1723,8 +1825,40 @@ short is_magwindow(int mag_window){
 	return 0;
 }
  
+void send_i2c_esc(struct motor_address_t * sett, unsigned int speed){
+    unsigned char spbyte[3];
+    spbyte[0]=0x00;
+    if((speed>MAX_PWM)&&(speed!=0xFFFF)){speed=MAX_PWM;}
+    
+    spbyte[1]=(unsigned char)((speed>>8)&(0x000000FF));
+    
+    if((speed!=0x0000)&&(speed!=0xFFFF)){
+        spbyte[1]=spbyte[1]|((sett->isreverse&0x01)<<7);
+    }
+    
+    spbyte[2]=(unsigned char)(speed&0x000000FF);
+    
+    
+    i2c_write(sett->fd,sett->addr,0x00 ,spbyte[1]);
+    i2c_write(sett->fd,sett->addr,0x01 ,spbyte[2]);
+	//ioctl(sett->fd, I2C_SLAVE, sett->addr);
+	//return write(sett->fd, spbyte, 3);  
 
+}
 
+void get_i2c_esc(struct motor_address_t * sett){
+    
+    unsigned char buff[9];
+    i2c_read(sett->fd,sett->addr, buff, 9);
+    if(buff[8]==0xab){
+        sett->temperature=(int)((buff[7]<<8)|(buff[6]));
+        sett->vbatt=((int)((buff[5]<<8)|(buff[4])))*ESC_VBAT_SCALE;
+        sett->rpm=((int)((buff[3]<<8)|(buff[2])));
+    }else{
+        sett->vbatt=0;
+        sett->rpm=-1;
+    }
+}    
 
 /**********************************************************************************************************/
 
@@ -1744,8 +1878,8 @@ int main(int argc, int argv[]){
     int fdUDPRecv=0;
     int limitYaw=0;
     int limitedYaw=0;
-
-
+	unsigned char texas_buffer[3]={0,0,0};
+	unsigned int texas_compensation=0;
 	struct imu error;
 
 	struct itimerval i_int;
@@ -1753,7 +1887,7 @@ int main(int argc, int argv[]){
 	struct timeval s_tstart;
 	struct timeval s_tend;
 	long  ac=0;
-	
+	long acAux=0;
 	int   result;
 	
 	char  generic_buffer[250];
@@ -1792,6 +1926,7 @@ int main(int argc, int argv[]){
 	unsigned char accel_window=0;
 	unsigned char mag_window=0;
 	unsigned char tele_window=0;
+	unsigned int tele_index=0;
 	unsigned char mag_sample=0;
 
 	float radxdeltaTM=0;
@@ -1800,10 +1935,13 @@ int main(int argc, int argv[]){
 
 	calibration_reads=CALIBRATION_READS;
 	if (argc>1){calibration_reads=atoi((const char *)argv[1]);}
-	if (calibration_reads<=0){
-		
+	if (calibration_reads<=0){		
 		calibration_reads=CALIBRATION_READS;
 	}
+	for(ac=0;ac<TELEMETRY_MSG_QUEUE_SIZE;ac++){
+	  colaMensajes[ac][0]='\0';
+	}
+	ac=0;
 	
 	//lastOrder[0]='\0';
 	sprintf(msg_telemetria,"#Sys:[info]Arranque IMU **PID ANG 1**(UDP,DT: %f Cals: %i )",DELTA_T,calibration_reads);
@@ -1812,10 +1950,7 @@ int main(int argc, int argv[]){
 
 	system("rm -Rf /tmp/gps_start");
 
-	system("cp -Rf /scripts/config/config* /tmp/");
-	system("stty -F /dev/ttyS0 raw  >/dev/null");
-	system("stty -F /dev/ttyS0 raw  >/dev/null");
-	system("stty -F /dev/ttyS0 speed 115200  >/dev/null");
+	system("cp -Rf /imu/config/config* /tmp/");
 	
 	system("killall udhcpc 2>/dev/null");
 	system("killall syslogd 2>/dev/null");
@@ -1827,9 +1962,6 @@ int main(int argc, int argv[]){
 	system("killall wifi_survey.sh 2>/dev/null");
 	system("killall nice 2>/dev/null");
 	
-	system("killall httpd 2>/dev/null");
-	system("stty -F /dev/ttyS0 speed 115200  >/dev/null");
-
 	//real_time_scheduling(1);
 	//usleep(1000);
     
@@ -1847,6 +1979,17 @@ int main(int argc, int argv[]){
 	sensor=zeroIMUreg();		error=zeroIMUreg();				target=zeroIMUreg();	mando=zeroIMUreg();
 	fdevice=zeroPort();
 	
+
+	
+	texas.comp=900;
+	texas.elev=900;
+	texas.rumbo=900;
+	
+	texas.switches=0;
+	texas.motor_l=127;
+	texas.motor_r=127;
+	texas.switches=0;
+	
 	biasMag.x=1; 	biasMag.y=1;	biasMag.z=1;
 	offsetMag.x=0; 	offsetMag.y=0; 	offsetMag.z=0;
  	
@@ -1863,7 +2006,7 @@ int main(int argc, int argv[]){
     motor[1]=0x00;		
     motor[2]=0x00;		
     motor[3]=0x00;		
-    motor[4]=MED_PWM;
+    motor[4]=0x00;
     motor_enabled[0]=0x01;
     motor_enabled[1]=0x01;
     motor_enabled[2]=0x01;
@@ -1917,6 +2060,27 @@ int main(int argc, int argv[]){
 	fdevice.comp=f_i2c0;
 	fdevice.radio=f_i2c0;
 	fdevice.mag=f_i2c0;
+    
+    
+    motor_settings[0].addr=MOTOR_0_ADDR;
+    motor_settings[1].addr=MOTOR_1_ADDR;
+    motor_settings[2].addr=MOTOR_2_ADDR;
+    motor_settings[3].addr=MOTOR_3_ADDR;
+    
+    motor_settings[0].fd=f_i2c0;
+    motor_settings[1].fd=f_i2c0;
+    motor_settings[2].fd=f_i2c1;
+    motor_settings[3].fd=f_i2c1;    
+    
+    motor_settings[0].vbatt=0;
+    motor_settings[1].vbatt=0;
+    motor_settings[2].vbatt=0;
+    motor_settings[3].vbatt=0;
+    
+    motor_settings[0].isreverse=0;
+    motor_settings[1].isreverse=0;
+    motor_settings[2].isreverse=0;
+    motor_settings[3].isreverse=0;    
 	
 	init_gyro(fdevice.gyro);	
 	init_accel(fdevice.accel);
@@ -1929,14 +2093,14 @@ int main(int argc, int argv[]){
 
 	
 	buffer_serie[0]=STRT_CHAR;
-	send_serial(buffer_serie, 1);
+	//send_serial(buffer_serie, 1);
 
 	/*****************************************************************************************/
 	ac=0;
-	biasMag=get_magcalibration(fdevice.mag);
+	//biasMag=get_magcalibration(fdevice.mag);
 
-	queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[info]Inicializando Magnetometro para medicion continua",1);
-	init_mag(fdevice.mag);
+	//queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[info]Inicializando Magnetometro para medicion continua",1);
+	//init_mag(fdevice.mag);
 	queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[info]Lanzando calibracion Gyro+Accel",1);
 	getGyroAccelCalibration(&fdevice, &rawBaseGyro,&rawBaseAccel, calibration_reads);
 
@@ -1950,8 +2114,8 @@ int main(int argc, int argv[]){
 	serial[0]=0xFF;
 	serial[5]=0x00;
 
-	get_mag(fdevice.mag, &rawMag,  &biasMag);			
-	yawCompass=get_course(&rawMag, 0, 0,declinacionMAG);
+	//get_mag(fdevice.mag, &rawMag,  &biasMag);			
+	//yawCompass=get_course(&rawMag, 0, 0,declinacionMAG);
 	lastYawCompass=yawCompass;
 	sensor.ginnada=yawCompass;
 	sensor.last_ginnada=yawCompass;
@@ -1986,10 +2150,20 @@ int main(int argc, int argv[]){
 
 	radxdeltaTM=DEG_TO_RAD*DELTA_T;
 
-    
-    
-	sprintf(msg_telemetria,"\r\n#Sys:[info]READY(Course %.2f)",yawCompass*RAD_TO_DEG);	
+	sprintf(msg_telemetria,"#Sys:Calibrando ESC por I2C");	
 	queueMessage(colaMensajes, &nextMsgToQueue,msg_telemetria,1);
+	 
+	for (ac=0;ac<4;ac++){
+	    send_i2c_esc(&motor_settings[ac], 0xFFFF);
+	    send_i2c_esc(&motor_settings[ac], 0x0000);
+	    send_i2c_esc(&motor_settings[ac], 0x0000);
+	}    
+
+        
+	sprintf(msg_telemetria,"#Sys:[info]READY(Course %.2f)",yawCompass*RAD_TO_DEG);	
+	queueMessage(colaMensajes, &nextMsgToQueue,msg_telemetria,1);
+
+    ac=0;
 
 	setitimer(ITIMER_REAL,&i_int,NULL);
 	(void)signal(SIGALRM ,timeout_real);	
@@ -2022,15 +2196,19 @@ int main(int argc, int argv[]){
                     window_dT=0;
                 break;    
 				//case WINDOW_ROUND_4:
+					
                 //    ioctl(fdwatchdog, WDIOC_KEEPALIVE, &dummywd);
                 //    window_dT=0;
                 //    current_window=4;
                 //break;	
 				default:
-					accel_window=1;
-                    current_window=99;
+				accel_window=1;
+				  current_window=30;
 				break;
 			}
+
+			
+
 			if ((mag_window==0)&&(tele_window==0)){accel_window=1;}
 
 			if (mag_window==1){		
@@ -2053,20 +2231,24 @@ int main(int argc, int argv[]){
 				
 			}
 			if(accel_window==1){
-                getAccelSample(fdevice.accel,  &rawAccel , &rawBaseAccel,analogs, bumpers );
+				getAccelSample(fdevice.accel,  &rawAccel , &rawBaseAccel,analogs, bumpers );
+	
 				accel_window=0;
-            
+
 				rawAccel.x=lowPassFilter(rawAccel.x,lastRawAccel.x,lowPassFactorAccel);
 				rawAccel.y=lowPassFilter(rawAccel.y,lastRawAccel.y,lowPassFactorAccel);
 				rawAccel.z=lowPassFilter(rawAccel.z,lastRawAccel.z,lowPassFactorAccel);
                 
-				/*lastRawAccel.x=rawAccel.x;
+				
+				lastRawAccel.x=rawAccel.x;
 				lastRawAccel.y=rawAccel.y;
-				lastRawAccel.z=rawAccel.z;	*/
-                lastRawAccel=rawAccel;	
+				lastRawAccel.z=rawAccel.z;	
+                //lastRawAccel=rawAccel;	
 				radAccel.x = angleInRadians(RANGE_X, rawAccel.x);
 				radAccel.y = angleInRadians(RANGE_Y, rawAccel.y);
 				radAccel.z = angleInRadians(RANGE_Z, rawAccel.z);
+				//printf("\nB%i\t%i\t%i",rawAccel.x,rawAccel.y,rawAccel.z);
+				//fflush(stdout);				
 				Drift_correction_ac(&radAccel);
                 
 			}  	
@@ -2077,409 +2259,308 @@ int main(int argc, int argv[]){
                 strcpy(read_mem,msg_recv);
                 roundCommand=0;
             }
-			if(read_mem[0]!=0x00){
-				get_order(read_mem);		
-				read_mem[0]=0x00;
-			}
+	    if(read_mem[0]!=0x00){
+		    get_order(read_mem);		
+		    read_mem[0]=0x00;
+	    }
 
-			//getGyroSample(fdevice.gyro, &rawGyro,&rawBaseGyro);
-			//getAccelSample(fdevice.accel,  &rawAccel , &rawBaseAccel,analogs, bumpers );			
-			
-			//getfAvgSample(&rawGyro,2);
-			//getAvgSample(&rawAccel,2);
 
             rawGyro.x=lowPassFilter(rawGyro.x,lastRawGyro.x,lowPassFactorGyro);
             rawGyro.y=lowPassFilter(rawGyro.y,lastRawGyro.y,lowPassFactorGyro);
             rawGyro.z=lowPassFilter(rawGyro.z,lastRawGyro.z,lowPassFactorGyro);
 
-            /**
-            rawGyro.x=0;
-            rawGyro.y=0;
-            rawGyro.z=0;
-            
-            
-            
-            */
-			// GYRO X[0]-> ROLL-> ALABEO
-			// GYRO Y[1]-> PITCH-> CABECEO
-			// GYRO Z[2]-> YAW-> GUIÑADA
-			sensor.filter_alabeo=(((float)(rawGyro.x))*DEG_TO_RAD)*DELTA_T;///radxdeltaTM;
-			sensor.filter_cabeceo=(((float)(rawGyro.y))*DEG_TO_RAD)*DELTA_T;//radxdeltaTM;
-			sensor.filter_ginnada=(((float)(rawGyro.z))*DEG_TO_RAD)*DELTA_T;//radxdeltaTM;
-	
-			actualizarMatrizDCM(&sensor);							
-			renormalizar(DCM_Temporal_Matriz, DCM_Matriz);	
-			actualizarMatrizDCMError();						      
-			renormalizar(DCM_Temporal_Matriz, DCM_Matriz);	
 
-            
-          
-            
-            
-			sensor.alabeo=  atan2f(DCM_Matriz[2][1], DCM_Matriz[2][2])+sensor.offset_alabeo;
-			sensor.cabeceo= asinf(-DCM_Matriz[2][0])+sensor.offset_cabeceo;
-			sensor.ginnada= -atan2f(DCM_Matriz[1][0], DCM_Matriz[0][0]);
+	    // GYRO X[0]-> ROLL-> ALABEO
+	    // GYRO Y[1]-> PITCH-> CABECEO
+	    // GYRO Z[2]-> YAW-> GUIÑADA
+	    sensor.filter_alabeo=(((float)(rawGyro.x))*DEG_TO_RAD)*DELTA_T;///radxdeltaTM;
+	    sensor.filter_cabeceo=(((float)(rawGyro.y))*DEG_TO_RAD)*DELTA_T;//radxdeltaTM;
+	    sensor.filter_ginnada=(((float)(rawGyro.z))*DEG_TO_RAD)*DELTA_T;//radxdeltaTM;
 
-			sensor.v_alabeo=(sensor.alabeo-sensor.last_alabeo)/DELTA_T;
-			sensor.v_cabeceo=(sensor.cabeceo-sensor.last_cabeceo)/DELTA_T;
-			//sensor.v_ginnada=(sensor.ginnada-currentAnguloContinuo(sensor.last_ginnada, sensor.ginnada))/DELTA_T;	
-            /*	
-            sensor.v_alabeo=rawGyro.x*DEG_TO_RAD;
-            sensor.v_cabeceo=rawGyro.y*DEG_TO_RAD;
-            */
-            sensor.v_ginnada=rawGyro.z*DEG_TO_RAD;			
-            
-			sensor.a_ginnada=(sensor.v_ginnada-sensor.last_v_ginnada)/DELTA_T;
-			sensor.a_cabeceo=(sensor.v_cabeceo-sensor.last_v_cabeceo)/DELTA_T;
-			sensor.a_alabeo=(sensor.v_alabeo-sensor.last_v_alabeo)/DELTA_T;
+	    actualizarMatrizDCM(&sensor);							
+	    renormalizar(DCM_Temporal_Matriz, DCM_Matriz);	
+	    actualizarMatrizDCMError();						      
+	    renormalizar(DCM_Temporal_Matriz, DCM_Matriz);	
 
-			sensor.last_alabeo=sensor.alabeo;
-			sensor.last_cabeceo=sensor.cabeceo;
-			sensor.last_ginnada=sensor.ginnada;
-			sensor.last_v_ginnada=sensor.v_ginnada;
-			sensor.last_v_alabeo=sensor.v_alabeo;
-			sensor.last_v_cabeceo=sensor.v_cabeceo;
+
+
+
+
+	    sensor.alabeo=  atan2f(DCM_Matriz[2][1], DCM_Matriz[2][2])+sensor.offset_alabeo;
+	    sensor.cabeceo= asinf(-DCM_Matriz[2][0])+sensor.offset_cabeceo;
+	    sensor.ginnada= -atan2f(DCM_Matriz[1][0], DCM_Matriz[0][0]);
+
+	    sensor.v_alabeo=(sensor.alabeo-sensor.last_alabeo)/DELTA_T;
+	    sensor.v_cabeceo=(sensor.cabeceo-sensor.last_cabeceo)/DELTA_T;
+        sensor.v_ginnada=(sensor.ginnada-sensor.last_ginnada)/DELTA_T;
+        
 			
-			if (is_NaN(sensor.alabeo)||is_NaN(sensor.cabeceo)||is_NaN(sensor.ginnada)){
-				reset_Matrices_globales();
-				ctrlAlabeo=zeroPIDreg();
-				ctrlCabeceo=zeroPIDreg();
-				ctrlGinnada=zeroPIDreg();
-				ctrlAltitud=zeroPIDreg();
-				ctrlAlabeo_v=zeroPIDreg();  ctrlCabeceo_v=zeroPIDreg();     ctrlGinnada_v=zeroPIDreg();
-			
-				ctrlLongitud=zeroPIDreg();
-				ctrlLatitud=zeroPIDreg();
-				ctrlAltitud=zeroPIDreg();
-		
-				sensor=zeroIMUreg();
-				error=zeroIMUreg();
-				target=zeroIMUreg();
-				mando=zeroIMUreg();
-				
-				queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[error]ERROR NaN",1);
-			}
-
-            #ifdef GPS_TRACKING
-			statusGPS=(short)gps_mem[4];
-			if (lastGPSClock==gps_mem[0]){
-				roundGPS++;				
-			}else{
-				lastGPSClock=gps_mem[0];
-				roundGPS=0;
-			}
-			if (roundGPS>TIMEOUT_GPS){
-				statusGPS=-1;
-				roundGPS=TIMEOUT_GPS;
-				if (gps_mem[0]>0){
-					if (pidGPS>0){
-						kill(pidGPS,SIGKILL);
-					}
-					
-					if (pidGPS=fork()==0){GPSreceiver();}
-					queueMessage(colaMensajes, &nextMsgToQueue,"#GPS:[info]System reload",1);
-
-					gps_mem[0]=0;
-					
-				}
-			}
-			
-			//autopilot
-			if ((autopilot>0)&&(statusGPS>0)){
-
-				//ojo! relativo a lat / long y no al morro 
-				targetGPS.latitud=targetGPS.latitud-(mando.cabeceo*DELTA_T);
-				targetGPS.longitud=targetGPS.longitud-(mando.alabeo*DELTA_T);
-				
-				
-				//ojo! revisar velocidad
-				ctrlLatitud=PID(Klatitud,ctrlLatitud,gps_mem[1],0, targetGPS.latitud,0,DELTA_T,1);
-				ctrlLongitud=PID(Klongitud,ctrlLongitud,gps_mem[2],0, targetGPS.longitud,0,DELTA_T,1);
-				
-				gpsToScale[0]=ctrlLatitud.output;
-				gpsToScale[1]=ctrlLongitud.output;	
-				
-				gpsScaled=scaleUpper(gpsToScale,2,targetGPS.max_angle);
-
-				target.alabeo= cosf(sensor.ginnada)*(*(gpsScaled+1))+sinf(sensor.ginnada)*(*gpsScaled);
-			    target.cabeceo=cosf(sensor.ginnada)*(*gpsScaled)+sinf(sensor.ginnada)*(*(gpsScaled+1));
-				
-				//printf(" GPS: LongT: %f LatT: %f ELongT: %f ELatT: %f Al: %f Cab: %f", targetGPS.longitud,targetGPS.latitud, *(gpsToScale+1), *(gpsToScale),target.alabeo,target.cabeceo );
-
-				if (autopilot==1){target.altitud=mando.altitud;}
-			}else{
-            #endif
-				if (encendido==1){
-					target.alabeo=mando.alabeo;
-					target.cabeceo=mando.cabeceo;
-					target.altitud=mando.altitud;
-				}
-            #ifdef GPS_TRACKING
-				if (statusGPS>0){
-	                targetGPS.latitud=gps_mem[1];
-                    targetGPS.longitud=gps_mem[2];
-                    targetGPS.altitud=gps_mem[3];
-				}
-
-                				
-			}
-            #else
-                statusGPS=0;
-            #endif
-			roundCommand++;
-			if (roundCommand>TIMEOUT_COMMAND){
-				roundCommand=TIMEOUT_COMMAND;
-                if((autopilot==0)||(statusGPS==0)){
-    				apply_failsafe_behaviour(read_mem, target.altitud*1000);
-	    			//printf("#Sys: Failsafe FIRED!");
-                        
-       				failsafe=1;
-                }    
-			}else{
-				failsafe=0;
-			}
-            roundCommandTele=roundCommand;
             
-			if (encendido==1){
-				target.v_ginnada=mando.v_ginnada;
-				target.altitud=mando.altitud;//quitar cuando haga el autopilot>1
-		
-			    //fin autopilot}
-                if(ctrlAltitud.output>100){
-                    if(yaw_delay_timer>=0.5){
-                        yaw_control=target_yaw_control;
-                    }else{
-                        yaw_delay_timer+=DELTA_T;
-                        yaw_control=0;
-                    }    
-                    
-                }else{
-                    yaw_control=0;
-                    yaw_delay_timer=0;
-                }
+	    sensor.a_ginnada=(sensor.v_ginnada-sensor.last_v_ginnada)/DELTA_T;
+	    sensor.a_cabeceo=(sensor.v_cabeceo-sensor.last_v_cabeceo)/DELTA_T;
+	    sensor.a_alabeo=(sensor.v_alabeo-sensor.last_v_alabeo)/DELTA_T;
 
-				ctrlAlabeo=     PID(Kalabeo_out,    ctrlAlabeo,  sensor.alabeo,     sensor.v_alabeo,   target.alabeo);//, 1,DELTA_T);
-                ctrlCabeceo=    PID(Kcabeceo_out,   ctrlCabeceo, sensor.cabeceo,    sensor.v_cabeceo,  target.cabeceo);//, 1,DELTA_T);
-                
-                switch(yaw_control){
-                    case 0:
-                        ctrlGinnada_v=zeroPIDreg();
-                        target.v_ginnada=sensor.v_ginnada;
-                        target.ginnada=sensor.ginnada;
-                    break;
-                    case 1:
-                        ctrlGinnada_v=  PID(Kginnada_v,  ctrlGinnada_v,   sensor.v_ginnada, sensor.a_ginnada,target.v_ginnada);
-                    break;
-                    case 2:    
-                        target.ginnada=shortestAngle(target.ginnada+(target.v_ginnada*(DELTA_T)/2),sensor.ginnada);
-                        ctrlGinnada=    PID(Kginnada,    ctrlGinnada,     sensor.ginnada,   sensor.v_ginnada , target.ginnada);
-                        ctrlGinnada_v=  PID(Kginnada_v,  ctrlGinnada_v,   sensor.v_ginnada, sensor.a_ginnada,  -ctrlGinnada.output);
-                    break;    
-                }                
-				ctrlAlabeo_v=   PID(Kalabeo_in,  ctrlAlabeo_v,  sensor.v_alabeo,  sensor.a_alabeo,  -ctrlAlabeo.output);  //target.alabeo);//, 1,DELTA_T);
-                ctrlCabeceo_v=  PID(Kcabeceo_in, ctrlCabeceo_v, sensor.v_cabeceo, sensor.a_cabeceo, -ctrlCabeceo.output); //target.cabeceo); //,1,DELTA_T);
- 
-
-		        
-				ctrlAltitud.output=(target.altitud);
-
-                if(ctrlAltitud.output<60){
-                    ctrlAlabeo_v=zeroPIDreg();
-                    ctrlCabeceo_v=zeroPIDreg();
-                }
-                //YAW_LIMIT
-                //limitYaw=ctrlAltitud.output*yawProportionLimit;
-                
-
-                
-                limitedYaw=ctrlGinnada_v.output;
-                //if(limitedYaw<(-limitYaw)){
-                //    limitedYaw=-limitYaw;
-                //}
-                //if(limitedYaw>limitYaw){
-                //    limitedYaw=limitYaw;
-                //}
-
-                
-				/*
-					 3 (-g)
-					 |
-				1---------2
-					 |
-					 0 (-g)
-				*/
-			
-				motor[1]=check_range_servo((long)(-ctrlAlabeo_v.output)+(limitedYaw)+(ctrlAltitud.output)+motor_offset[1]);
-				motor[2]=check_range_servo((long)(ctrlAlabeo_v.output)+(limitedYaw)+(ctrlAltitud.output)+motor_offset[2]);
-				
-				motor[0]=check_range_servo((long)(ctrlCabeceo_v.output)+(-limitedYaw)+(ctrlAltitud.output+motor_offset[0]));
-				motor[3]=check_range_servo((long)(-ctrlCabeceo_v.output)+(-limitedYaw)+(ctrlAltitud.output)+motor_offset[3]);
-
-				save_gps=1;
-				
-			}else{	
-			    failsafe=0;
-				motor[0]=0x00;
-				motor[1]=0x00;
-				motor[2]=0x00;
-				motor[3]=0x00;
-				target.ginnada=sensor.ginnada;
-				autopilot=0;
-				targetGPS.latitud=gps_mem[1];
-				targetGPS.longitud=gps_mem[2];
-				targetGPS.altitud=gps_mem[3];
-
-				ctrlAlabeo=zeroPIDreg();
-				ctrlCabeceo=zeroPIDreg();
-				ctrlGinnada=zeroPIDreg();
-				ctrlAltitud=zeroPIDreg();
-                
-				ctrlAlabeo_v=zeroPIDreg();
-				ctrlCabeceo_v=zeroPIDreg();
-				ctrlGinnada_v=zeroPIDreg();                
-
-				if ((save_gps==1)&&(statusGPS>0)){
-					save_gps=0;
-					sprintf(shell_command,"echo %f,%f,%f,%f > /tmp/gps_start", gps_mem[1],gps_mem[2],gps_mem[3],gps_mem[4]); 
-					systemOutput(shell_command, NULL);
-				}			
-			}
-            
-            if(accel_window==0){
-			    if (escSpecialCom>=0){
-				    motor[0]=escSpecialCom;
-				    motor[1]=escSpecialCom;
-				    motor[2]=escSpecialCom;
-				    motor[3]=escSpecialCom;
-			    }
-
-			    if((motor[0]>500)&&(motor[1]>500)&&(motor[2]>500)&&(motor[3]>500)){
-				    motor[0]=0;motor[1]=0;motor[2]=0;motor[3]=0;
-			
-				    queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[critical]ERROR Motor overflow",1);
-				
-			    }			
-                for (ac=0;ac<SERVOS;ac++){
-                    if (motor_enabled[ac]==0){
-                        motor[ac]=0;
-                    }
-                }	
-            }
-
-
-			if(tele_window>0){
-				
-				switch(tipoTelemetria){
-					case 0:
-						if((pid_output>0)&&(tele_window==1)){
-											                     // 0   1   2    3    4   5   6 7  8  9 10 11 12 13 14 15 161718192021 22  23 24   25   26 27 28
-							sprintf(write_mem,"<script>comet.input('%i;%i;%.3f;%.3f;%.3f;%.3f;0;%i;0;0;%i;%i;%i;%i;0;%i;0;0;0;0;0;%i;0;%.4f;%i;%.3f;%.3f;%s;%i;%.3f;%.3f;%.3f');</script>",
-								analogs[0], //0
-								analogs[1], //1
-								sensor.alabeo, //2
-								sensor.cabeceo, //3
-								sensor.v_ginnada, //4
-								sensor.suelo,  //5
-								//gps_mem[3], //sensor.altitud, //6
-								encendido, //7
-								//bumpers[0],  //8
-								//bumpers[1],  //9
-								motor[0],    //10
-								motor[1],    //11
-								motor[2],    //12
-								motor[3],    //13
-								//motor[4],    //14
-								timeout_deltaT_overflows, //15
-								//statusGPS, //estado gps  //16 
-								//gps_mem[1], //lat actual  //17
-								//gps_mem[2], //long actual //18
-								//targetGPS.latitud,  //19
-								//targetGPS.longitud,  //20
-								failsafe, //21
-								//autopilot, //22
-								target.v_ginnada, //23 volver a .ginnada
-								(target_yaw_control<<1)+yaw_control, //24,
-								target.alabeo, //25
-								target.cabeceo,  //26
-								colaMensajes[nextMessage(colaMensajes,&nextMsgToSend)],//27
-								roundCommandTele, //28
-                                (float)ctrlGinnada_v.op,
-                                (float)ctrlGinnada_v.oi,
-                                (float)ctrlGinnada_v.od
-								);
-								tele_window=2;
-						}
-						if (tele_window==2){
-							kill(pid_output, SIGUSR2);
-							tele_window=0;	
-						}
-					break;
-					case 1:
-						sprintf(udp_telemetry,"G%.0f;%.0f;%.0f;A%.0f;%.0f;%.0f;M%.2f;%.2f;%.2f;D%.2f;%.2f;%.2f;I%.2f;;;;", 
-								(float)rawGyro.x,
-								(float)rawGyro.y,
-								(float)rawGyro.z, 
-								(float)rawAccel.x,
-								(float)rawAccel.y,
-								(float)rawAccel.z, 
-								(float)lastRawMag.x,
-								(float)lastRawMag.y, 
-								(float)lastRawMag.z, 
-								sensor.cabeceo*RAD_TO_DEG, 
-								sensor.alabeo*RAD_TO_DEG, 
-								sensor.ginnada*RAD_TO_DEG, 
-								yawCompass*RAD_TO_DEG
-								);	
-						
-						sendUDPMessage(&udpSendConn, udp_telemetry);
-						tele_window=0;
-					break;
-					case 2:
-							printf("%i;%i;%.2f;%.2f;%.2f;%.2f;%.2f;%i;%i;%i;%i;%i;%i;%i;%i;%i;%i;%f;%f;%f;%f;%i;%i",
-								analogs[0], //0
-								analogs[1], //1
-								sensor.alabeo, //2
-								sensor.cabeceo, //3
-								sensor.ginnada, //4
-								sensor.suelo,  //5
-								gps_mem[2], //sensor.altitud, //6
-								encendido, //7
-								bumpers[0],  //8
-								bumpers[1],  //9
-								motor[0],    //10
-								motor[1],    //11
-								motor[2],    //12
-								motor[3],    //13
-								motor[4],    //14
-								timeout_deltaT_overflows, //15
-								statusGPS, //estado gps  //16 
-								gps_mem[1], //lat actual  //17
-								gps_mem[2], //long actual //18
-								targetGPS.latitud,  //19
-								targetGPS.longitud,  //20
-								failsafe, //21
-								autopilot //22
-								
-								);
-							tele_window=0;	
-					break;
-				}
-                timeout_deltaT_overflows=0;                
-				
-			}
+	    sensor.last_alabeo=sensor.alabeo;
+	    sensor.last_cabeceo=sensor.cabeceo;
+	    sensor.last_ginnada=sensor.ginnada;
+	    sensor.last_v_ginnada=sensor.v_ginnada;
+	    sensor.last_v_alabeo=sensor.v_alabeo;
+	    sensor.last_v_cabeceo=sensor.v_cabeceo;
+	    
+	    if (is_NaN(sensor.alabeo)||is_NaN(sensor.cabeceo)||is_NaN(sensor.ginnada)){
+		    reset_Matrices_globales();
+		    ctrlAlabeo=zeroPIDreg();
+		    ctrlCabeceo=zeroPIDreg();
+		    ctrlGinnada=zeroPIDreg();
+		    ctrlAltitud=zeroPIDreg();
+		    ctrlAlabeo_v=zeroPIDreg();  ctrlCabeceo_v=zeroPIDreg();     ctrlGinnada_v=zeroPIDreg();
+	    
+		    ctrlLongitud=zeroPIDreg();
+		    ctrlLatitud=zeroPIDreg();
+		    ctrlAltitud=zeroPIDreg();
+    
+		    sensor=zeroIMUreg();
+		    error=zeroIMUreg();
+		    target=zeroIMUreg();
+		    mando=zeroIMUreg();
 		    
+		    queueMessage(colaMensajes, &nextMsgToQueue,"#Sys:[error]ERROR NaN",1);
+	    }
 
 
-			serial[0]=0xFF;
-			serial[1]=(unsigned char)(msb(motor[0])+(msb(motor[1])<<1)+(msb(motor[2])<<2)+(msb(motor[3])<<3));
-			serial[2]=(unsigned char)avoid_char(lsb(motor[0]),0xFF);
-			serial[3]=(unsigned char)avoid_char(lsb(motor[1]),0xFF);
-			serial[4]=(unsigned char)avoid_char(lsb(motor[2]),0xFF);
-			serial[5]=(unsigned char)avoid_char(lsb(motor[3]),0xFF);
-			send_serial(serial, 6);
+
+	    if (encendido==1){
+		    target.alabeo=mando.alabeo;
+		    target.cabeceo=mando.cabeceo;
+		    target.altitud=mando.altitud;
+	    }
+
+           statusGPS=0;
+
+            roundCommand++;
+	    if (roundCommand>TIMEOUT_COMMAND){
+		    roundCommand=TIMEOUT_COMMAND;
+		    apply_failsafe_behaviour(read_mem, target.altitud);
+		    failsafe=1;		       
+	    }else{
+		    failsafe=0;
+	    }
+            roundCommandTele=roundCommand;            
+            get_i2c_esc(&motor_settings[0]);
+	    
+	    if (encendido==1){
+		  target.v_ginnada=mando.v_ginnada;
+		  target.altitud=mando.altitud;
+		  
+		  if(((target.altitud*100)/MAX_PWM)>PERCENT_GAS_YAW_CONTROL_ACT){
+		      if(yaw_delay_timer>=0.5){
+			    yaw_control=target_yaw_control;
+		      }else{
+			    yaw_delay_timer+=DELTA_T;
+			    yaw_control=0;
+		      }
+		  }else{
+		      yaw_control=0;
+		      yaw_delay_timer=0;
+		  }
+	
+		  ctrlAlabeo=     PID(Kalabeo_out,    ctrlAlabeo,  sensor.alabeo,     sensor.v_alabeo,   target.alabeo);//, 1,DELTA_T);
+		  ctrlCabeceo=    PID(Kcabeceo_out,   ctrlCabeceo, sensor.cabeceo,    sensor.v_cabeceo,  target.cabeceo);//, 1,DELTA_T);
+
+		  switch(yaw_control){
+		  case 0:
+			ctrlGinnada_v=zeroPIDreg();
+			target.v_ginnada=sensor.v_ginnada;
+			target.ginnada=sensor.ginnada;
+		  break;
+		  case 1:
+			ctrlGinnada_v=  PID(Kginnada_v,  ctrlGinnada_v,   sensor.v_ginnada, sensor.a_ginnada,target.v_ginnada);
+		  break;
+		  case 2:    
+			target.ginnada=shortestAngle(target.ginnada+(target.v_ginnada*(DELTA_T)/2),sensor.ginnada);
+			ctrlGinnada=    PID(Kginnada,    ctrlGinnada,     sensor.ginnada,   sensor.v_ginnada , target.ginnada);
+			ctrlGinnada_v=  PID(Kginnada_v,  ctrlGinnada_v,   sensor.v_ginnada, sensor.a_ginnada,  -ctrlGinnada.output);
+		  break;    
+		  }                
+		  ctrlAlabeo_v=   PID(Kalabeo_in,  ctrlAlabeo_v,  sensor.v_alabeo,  sensor.a_alabeo,  -ctrlAlabeo.output);  //target.alabeo);//, 1,DELTA_T);
+		  ctrlCabeceo_v=  PID(Kcabeceo_in, ctrlCabeceo_v, sensor.v_cabeceo, sensor.a_cabeceo, -ctrlCabeceo.output); //target.cabeceo); //,1,DELTA_T);
+
+
+
+		  ctrlAltitud.output=(target.altitud);
+
+		  /*if(ctrlAltitud.output<60){
+			ctrlAlabeo_v=zeroPIDreg();
+			ctrlCabeceo_v=zeroPIDreg();
+		  }*/
+
+		  limitedYaw=ctrlGinnada_v.output;
+
+
+		  /* 
+		  3    2P		
+		    \  /
+
+		    /  \
+		  1P    0
+		  */	
+		  motor[1]=limitMotor((long)(((-ctrlAlabeo_v.output) +( ctrlCabeceo_v.output) +(limitedYaw) +(ctrlAltitud.output)))+motor_offset[1]);
+		  motor[2]=limitMotor((long)(((ctrlAlabeo_v.output)  +(-ctrlCabeceo_v.output) +(limitedYaw) +(ctrlAltitud.output)))+motor_offset[2]);
+
+		  motor[0]=limitMotor((long)(((ctrlCabeceo_v.output) +( ctrlAlabeo_v.output) +(-limitedYaw) +(ctrlAltitud.output)))+motor_offset[0]);
+		  motor[3]=limitMotor((long)(((-ctrlCabeceo_v.output)+(-ctrlAlabeo_v.output) +(-limitedYaw) +(ctrlAltitud.output)))+motor_offset[3]);
+
+		  save_gps=1;
+				
+	      }else{	
+              failsafe=0;
+              motor[0]=0x00;
+              motor[1]=0x00;
+              motor[2]=0x00;
+              motor[3]=0x00;
+              target.ginnada=sensor.ginnada;
+              autopilot=0;
+              targetGPS.latitud=gps_mem[1];
+              targetGPS.longitud=gps_mem[2];
+              targetGPS.altitud=gps_mem[3];
+
+              ctrlAlabeo=zeroPIDreg();
+              ctrlCabeceo=zeroPIDreg();
+              ctrlGinnada=zeroPIDreg();
+              ctrlAltitud=zeroPIDreg();
+      
+              ctrlAlabeo_v=zeroPIDreg();
+              ctrlCabeceo_v=zeroPIDreg();
+              ctrlGinnada_v=zeroPIDreg();                
+
+              if ((save_gps==1)&&(statusGPS>0)){
+                  save_gps=0;
+                  sprintf(shell_command,"echo %f,%f,%f,%f > /tmp/gps_start", gps_mem[1],gps_mem[2],gps_mem[3],gps_mem[4]); 
+                  systemOutput(shell_command, NULL);
+              }			
+	      }
+            
+
+	
+            for (ac=0;ac<SERVOS;ac++){
+                if (motor_enabled[ac]==0){
+                    motor[ac]=0;
+                }
+            }	
+  
+            
+
+	    if(tele_window>0){	
+
+		if((pid_output>0)&&(tele_window==DELTA_TELE_MULT)){
 			
-			window_dT++;
-			timeout_deltaT=0;
+		
+			unsigned char binP=0;
+			unsigned char bitFlags=0x00;
+			bitFlags=bitFlags|(unsigned char)(encendido&0x01);     			        // 0 0 0 0 0 0 0 1
+			bitFlags=bitFlags|(unsigned char)((timeout_deltaT_overflows&0x07)<<1);          // 0 0 0 0 1 1 1 0
+			bitFlags=bitFlags|(unsigned char)((yaw_control&0x03)<<4);			// 0 0 1 1 0 0 0 0
+			bitFlags=bitFlags|(unsigned char)((failsafe&0x01)<<6);			// 0 1 0 0 0 0 0 0
+			
+			write_mem[binP]=bitFlags;				binP+=1;		
+			write_mem[binP]=(roundCommandTele&0x0000FF);	        binP+=1;
+
+			//printf("\n BIT %x ",bitFlags);
+			
+			toBinArray(&write_mem[binP], sensor.alabeo*	1000,3);	binP+=3;
+			toBinArray(&write_mem[binP], sensor.v_alabeo*	1000,3);	binP+=3;
+			toBinArray(&write_mem[binP], sensor.cabeceo*	1000,3);	binP+=3;
+			toBinArray(&write_mem[binP], sensor.v_cabeceo*	1000,3);	binP+=3;
+			toBinArray(&write_mem[binP], sensor.ginnada*	1000,3);	binP+=3;
+			toBinArray(&write_mem[binP], sensor.v_ginnada*	1000,3);	binP+=3;
+			
+			toBinArray(&write_mem[binP], target.alabeo*	1000,3);	binP+=3;
+			toBinArray(&write_mem[binP], target.v_alabeo*	1000,3);	binP+=3;
+			toBinArray(&write_mem[binP], target.cabeceo*	1000,3);	binP+=3;
+			toBinArray(&write_mem[binP], target.v_cabeceo*	1000,3);	binP+=3;
+			toBinArray(&write_mem[binP], target.ginnada*	1000,3);	binP+=3;
+			toBinArray(&write_mem[binP], target.v_ginnada*	1000,3);	binP+=3;
+			
+			toBinArray(&write_mem[binP], target.altitud*	1000,3);	binP+=3;
+			toBinArray(&write_mem[binP], target.v_altitud*	1000,3);	binP+=3;
+	
+			
+			for(ac=0;ac<=7;ac++){
+                if(ac<=3){
+                    toBinArray(&write_mem[binP], motor[ac],3);		binP+=3;
+                }else{
+                    toBinArray(&write_mem[binP], 0,3);		binP+=3;
+                }
+                
+            }
+			toBinArray(&write_mem[binP], (unsigned int)MAX_PWM,3);	binP+=3;		
+
+			
+			toBinArray(&write_mem[binP], (int)lastRawGyro.x*100,2);		binP+=2;
+			toBinArray(&write_mem[binP], (int)lastRawGyro.y*100,2);		binP+=2;
+			toBinArray(&write_mem[binP], (int)lastRawGyro.z*100,2);		binP+=2;
+			
+			toBinArray(&write_mem[binP], (int)lastRawAccel.x*100,2);	binP+=2;
+			toBinArray(&write_mem[binP], (int)lastRawAccel.y*100,2);	binP+=2;
+			toBinArray(&write_mem[binP], (int)lastRawAccel.z*100,2);	binP+=2;
+
+			toBinArray(&write_mem[binP], (int)lastRawMag.x*100,2);		binP+=2;
+			toBinArray(&write_mem[binP], (int)lastRawMag.y*100,2);		binP+=2;
+			toBinArray(&write_mem[binP], (int)lastRawMag.z*100,2);		binP+=2;	
+			
+			toBinArray(&write_mem[binP], ((float)analogs[0]/VBATT_SCALE)*100,2);	binP+=2;			
+			toBinArray(&write_mem[binP], ((float)analogs[1])*100,2);	binP+=2;								
+			
+            for(ac=0;ac<3;ac++){
+                for(acAux=0;acAux<3;acAux++){
+                    toBinArray(&write_mem[binP], (DCM_Matriz[ac][acAux]+1)*	1000,3);	binP+=3;
+		    //
+                }
+            }
+            
+			toBinArray(&write_mem[binP], (int)texas.rumbo,2);		binP+=2;
+			toBinArray(&write_mem[binP], (int)texas.elev,2);		binP+=2;
+			toBinArray(&write_mem[binP], (int)texas.comp,2);		binP+=2;
+			
+			toBinArray(&write_mem[binP], (int)texas.motor_l,1);		binP+=1;
+			toBinArray(&write_mem[binP], (int)texas.motor_r,1);		binP+=1;
+           
+			toBinArray(&write_mem[binP], (int)texas.switches,1);		binP+=1;
+			
+			
+			strncpy(&write_mem[150],colaMensajes[nextMessage(colaMensajes,&nextMsgToSend)],100);	
+			
+			
+
+			
+			
+			kill(pid_output, SIGUSR2);
+		        tele_window=0;
+		}
+			
+                timeout_deltaT_overflows=0;                
+	  }
+	  tele_window++;
+
+
+
+	  /*send_i2c_esc(&motor_settings[0], motor[0]);            
+	  send_i2c_esc(&motor_settings[2], motor[2]);
+	  send_i2c_esc(&motor_settings[1], motor[1]);
+	  send_i2c_esc(&motor_settings[3], motor[3]);
+
+            */
+	  texas_compensation=((sensor.alabeo*RAD_TO_DEG)+90)*10;
+	  //fprintf(stderr,"\r\n %i   $$ %f",texas_compensation, sensor.alabeo*RAD_TO_DEG);
+	  texas_compensation-=1;	
+	  texas_buffer[0]=0x04;
+	  texas_buffer[1]= (unsigned char)((texas_compensation>>8)&0x00FF);
+	  texas_buffer[2]= (unsigned char)((texas_compensation)&0x00FF);
+	  i2c_buffer_write(f_i2c0,(unsigned char)TEXAS_ADDR,texas_buffer ,3);
+
+			
+	  window_dT++;
+	  timeout_deltaT=0;
 
 		}
 
@@ -2487,3 +2568,4 @@ int main(int argc, int argv[]){
 	}
 	
 }
+
